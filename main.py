@@ -38,6 +38,7 @@ class unit(chainer.Chain):
         y = F.sin(phase)
         x = F.linear(F.concat((x, _1, _0)), self.link)
         y = F.linear(F.concat((y, _0, _1)), self.link)
+        self.l1 = F.sum(F.absolute(F.concat((_1,)*self.dim + (_0, _0)) * F.vstack((self.link,)*len(time))))
         return x, y
     def calc(self, time):
         _0 = chainer.Variable(np.zeros((len(time),1), np.float32))
@@ -50,7 +51,6 @@ class unit(chainer.Chain):
         center_y = F.linear(F.concat((*[_0 for _ in range(self.dim)], _0, _1)), self.link).data
         satellite_x = x.data * self.link.data[:,:4]
         satellite_y = y.data * self.link.data[:, :4]
-        
         return center_x[0,0], center_y[0,0], satellite_x, satellite_y
 
 class NN(chainer.Chain):
@@ -75,19 +75,23 @@ class NN(chainer.Chain):
         return X, Y
 
     def __call__(self, time, teacher, sigma):
-        """return loss (L2 norm)"""
+        """return loss (L2 distance + L1 norm)"""
+        l1_lambda = 0.01
         teacher_x, teacher_y = np.c_[teacher[...,0]], np.c_[teacher[...,1]]
 
         predict_x, predict_y = self.calc(time)
         diff_vec = F.concat((predict_x-teacher_x, predict_y-teacher_y))
-        #diff_vec /= sigma
+        
         loss = F.sum(diff_vec**2)
         
+        l1 = sum([u.l1 for u in self.u])
+        loss += l1 * l1_lambda
         #loss = F.sum((teacher_x-predict_x)**2 + (teacher_y-predict_y)**2)
         if self.train:
             chainer.reporter.report({'main/loss': loss.data.sum()/len(time)})
         else:
             chainer.reporter.report({'validation/main/loss': loss.data.sum()/len(time)})
+            chainer.reporter.report({'validation/main/L1': l1.data.sum()/len(time)})
         return loss
 
 class TestEvaluator(extensions.Evaluator):
@@ -103,24 +107,27 @@ class TestEvaluator(extensions.Evaluator):
  
 
 if __name__ == '__main__':
-    name = 'G'
-    train_from = 20
-    train_to = 40
+    name = 'S'
+    prefix = 'trained_20171107'
+    train_from = 0
+    train_to = 60
     train = True
-    epoch = 10
+    load = None
+    epoch = 200
     offset = [
         [-3, -3], # 左上
         [3, -1], # 右上
         [3, 1], # 右下
-        [-3, 3]  # 左下
+        [-3, 4]  # 左下
     ]
 
     np.random.seed(132)
     model = NN(offset)
     optimizer = chainer.optimizers.Adam()
     optimizer.setup(model)
-    
-    chainer.serializers.load_npz('trained_%s'%name, model)
+    save_name = '%s%s'%(prefix, name)
+    if load:
+        chainer.serializers.load_npz(load, model)
     """for i in range(4):
         W = model.u[i].link.data
         W[0, -2] = offset[i][0]
@@ -234,12 +241,15 @@ if __name__ == '__main__':
     trainer.extend(extensions.LogReport())
     trainer.extend(extensions.ProgressBar())
     trainer.extend(extensions.PrintReport(
-        ['epoch', 'main/loss', 'validation/main/loss', 'elapsed_time']
+        ['epoch', 'main/loss', 'validation/main/loss', 'validation/main/L1', 'elapsed_time']
     ))
 
     if train:
         trainer.run()
 
+    for u_i, u in enumerate(model.u):
+        print('unit %d:'%u_i, u.link.data, end=' ')
+        print(len(np.where(abs(u.link.data) > 0.1)[0]))
 
     times = np.linspace(0, 1, len(graph_t)).reshape(-1, 1).astype(np.float32)
     predict_x, predict_y = model.calc(times)
@@ -262,5 +272,5 @@ if __name__ == '__main__':
 
     print('save? >>', end='')
     if train and input() == 'y':
-        chainer.serializers.save_npz('trained_%s'%name, model)
-        print('saved.')
+        chainer.serializers.save_npz(save_name, model)
+        print('saved. (%s)'%save_name)
