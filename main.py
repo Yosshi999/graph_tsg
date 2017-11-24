@@ -14,6 +14,7 @@ class unit(chainer.Chain):
     def __init__(self, x, y):
         super().__init__()
         self.dim = 4
+        self.offset = chainer.Variable(np.hstack((np.zeros((1, self.dim)), np.array([[x, 0]]))).astype(np.float32))
         
         dim = self.dim
         with self.init_scope():
@@ -39,6 +40,9 @@ class unit(chainer.Chain):
         x = F.linear(F.concat((x, _1, _0)), self.link)
         y = F.linear(F.concat((y, _0, _1)), self.link)
         self.l1 = F.sum(F.absolute(F.concat((_1,)*self.dim + (_0, _0)) * F.vstack((self.link,)*len(time))))
+        
+        base = chainer.Variable(np.array([[0]*self.dim + [1, 0]], np.float32)) * self.link
+        self.off_loss = F.sum((base - self.offset)**2)
         return x, y
     def calc(self, time):
         _0 = chainer.Variable(np.zeros((len(time),1), np.float32))
@@ -76,7 +80,7 @@ class NN(chainer.Chain):
 
     def __call__(self, time, teacher, sigma):
         """return loss (L2 distance + L1 norm)"""
-        l1_lambda = 0.01
+        l1_lambda = 0.001
         teacher_x, teacher_y = np.c_[teacher[...,0]], np.c_[teacher[...,1]]
 
         predict_x, predict_y = self.calc(time)
@@ -85,7 +89,9 @@ class NN(chainer.Chain):
         loss = F.sum(diff_vec**2)
         
         l1 = sum([u.l1 for u in self.u])
+        off_loss = sum([u.off_loss for u in self.u])
         loss += l1 * l1_lambda
+        loss += off_loss * 0.1
         #loss = F.sum((teacher_x-predict_x)**2 + (teacher_y-predict_y)**2)
         if self.train:
             chainer.reporter.report({'main/loss': loss.data.sum()/len(time)})
@@ -107,19 +113,36 @@ class TestEvaluator(extensions.Evaluator):
  
 
 if __name__ == '__main__':
-    name = 'S'
-    prefix = 'trained_20171107'
+    name = sys.argv[1]
+    prefix = sys.argv[2]
     train_from = 0
     train_to = 60
     train = True
-    load = None
-    epoch = 200
-    offset = [
-        [-3, -3], # 左上
-        [3, -1], # 右上
-        [3, 1], # 右下
-        [-3, 4]  # 左下
-    ]
+    load = sys.argv[3] if sys.argv[3] != 'None' else None
+    epoch = int(sys.argv[4])
+
+    offset = None
+    if name == 'T':
+        offset = [ # T
+            [-3.5, -3.5],
+            [-2, -2],
+            [-2, 2],
+            [-3.5, 3.5]
+        ]
+    elif name == 'S':
+        offset = [ # T
+            [-1, -2],
+            [1, -2],
+            [1, 2],
+            [-1, 2]
+        ]
+    elif name == 'G':
+        offset = [ # G
+            [1.2, -1.2], # 左上
+            [2.5, -2.5], # 右上
+            [2.5, 2.5], # 右下
+            [1.2, 1.2]  # 左下
+        ]
 
     np.random.seed(132)
     model = NN(offset)
@@ -197,6 +220,7 @@ if __name__ == '__main__':
             [172, 166],
             [174, 139],
             [150, 138],
+            [121, 140],
             [121, 140]
         ])
         _g = np.vstack((_g, _g[::-1]))
@@ -204,10 +228,9 @@ if __name__ == '__main__':
         graph_ty = interpolate.interp1d(np.linspace(0, 1, len(_g)), _g[:,1])(np.linspace(0, 1, 60)).reshape(-1,1)
         graph_t = np.hstack((graph_tx, graph_ty)).astype(np.float32)
 
-
-
-    graph_t -= graph_t.mean(axis=0)
-    graph_t /= graph_t[:,0].max() - graph_t[:,0].min()
+    size = graph_t.max() - graph_t.min()
+    graph_t -= graph_t.min() + size/2
+    graph_t /= size
 
     """plt.scatter(graph_t[:,0], graph_t[:,1], c="red")
     plt.show()
@@ -255,19 +278,19 @@ if __name__ == '__main__':
     predict_x, predict_y = model.calc(times)
     teacher = graph_t
     plt.figure(figsize=(8,4))
-
+    
     plt.subplot(1,2,1)
     plt.scatter(teacher[train_from:train_to, 0], teacher[train_from:train_to, 1], c="red")
     plt.plot(predict_x.data[train_from:train_to], predict_y.data[train_from:train_to], "b.-")
     plt.xlim(-1, 1)
-    plt.ylim(-1, 1)
+    plt.ylim(1, -1)
     #plt.show()
 
     plt.subplot(1,2,2)
-    plt.scatter(teacher[:, 0], teacher[:, 1], c="red")
-    plt.plot(predict_x.data[:], predict_y.data[:], "b.-")
+    plt.scatter(teacher[:, 0], teacher[:, 1], c="0.3")
+    plt.plot(predict_x.data[:], predict_y.data[:], "-", c="0", linewidth=2)
     plt.xlim(-1, 1)
-    plt.ylim(-1, 1)
+    plt.ylim(1, -1)
     plt.show()
 
     print('save? >>', end='')
